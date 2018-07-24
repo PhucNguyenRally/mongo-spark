@@ -51,6 +51,41 @@ private[spark] object MapFunctions {
     new GenericRowWithSchema(requiredValues.map(_._1), DataTypes.createStructType(requiredValues.map(_._2)))
   }
 
+  def safeDocumentToRow(bsonDocument: BsonDocument, schema: StructType, requiredColumns: Array[String] = Array.empty[String]): (Boolean, Row) = {
+    var validRow = true
+    val values: Array[(Any, StructField)] = schema.fields.map(
+      field =>
+        bsonDocument.containsKey(field.name) match {
+          case true => {
+            val (valid, value) = safeConvertToDataType(bsonDocument.get(field.name), field.dataType)
+            if (!valid) {
+              validRow = false
+            }
+            (value, field)
+          }
+          case false => { // TODO: need to hanlde missing field here
+            validRow = false
+            (null, field)
+          }
+        }
+    )
+
+    val requiredValues = requiredColumns.nonEmpty match {
+      case true =>
+        val requiredValueMap = Map(
+          values.collect(
+            {
+              case (rowValue, rowField) if requiredColumns.contains(rowField.name) =>
+                (rowField.name, (rowValue, rowField))
+            }
+          ): _*
+        )
+        requiredColumns.collect({ case name => requiredValueMap.getOrElse(name, null) })
+      case false => values
+    }
+    (validRow, new GenericRowWithSchema(requiredValues.map(_._1), DataTypes.createStructType(requiredValues.map(_._2))))
+  }
+
   def rowToDocument(row: Row): BsonDocument = {
     val document = new BsonDocument()
     row.schema.fields.zipWithIndex.foreach({
@@ -79,6 +114,41 @@ private[spark] object MapFunctions {
           case true  => null
           case false => throw new MongoTypeConversionException(s"Cannot cast ${element.getBsonType} into a $elementType (value: $element)")
         }
+    }
+  }
+
+  private def safeConvertToDataType(element: BsonValue, elementType: DataType): (Boolean, Any) = {
+    try {
+      (element.getBsonType, elementType) match {
+        case (BsonType.DOCUMENT, mapType: MapType) => (true, element.asDocument().asScala
+          .map(kv => (kv._1, convertToDataType(kv._2, mapType.valueType))).toMap)
+        case (BsonType.ARRAY, arrayType: ArrayType) => (true, element.asArray().getValues.asScala
+          .map(convertToDataType(_, arrayType.elementType)))
+        case (BsonType.BINARY, BinaryType)       => (true, element.asBinary().getData)
+        case (BsonType.BOOLEAN, BooleanType)     => (true, element.asBoolean().getValue)
+        case (BsonType.DATE_TIME, DateType)      => (true, new Date(element.asDateTime().getValue))
+        case (BsonType.DATE_TIME, TimestampType) => (true, new Timestamp(element.asDateTime().getValue))
+        case (BsonType.NULL, NullType)           => (true, null)
+        case (isBsonNumber(), DoubleType)        => (true, element.asNumber().doubleValue())
+        case (isBsonNumber(), IntegerType)       => (true, element.asNumber().intValue())
+        case (isBsonNumber(), LongType)          => (true, element.asNumber().longValue())
+        case (notNull(), schema: StructType) => (true, castToStructType(
+          element,
+          schema
+        )) // need to handle exception here
+        case (_, StringType) => (true, bsonValueToString(element))
+        case _ =>
+          element.isNull match {
+            case true => (true, null)
+            case false =>
+              throw new MongoTypeConversionException(s"Cannot cast ${element.getBsonType} into a $elementType (value: $element)")
+          }
+      }
+    } catch {
+      case ex: Throwable => {
+        //logWarning(s"got exception $ex - convert ${element.getBsonType} to string")
+        (false, bsonValueToString(element))
+      }
     }
   }
 

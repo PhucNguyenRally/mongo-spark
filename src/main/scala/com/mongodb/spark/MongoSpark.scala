@@ -34,7 +34,7 @@ import com.mongodb.spark.DefaultHelper.DefaultsTo
 import com.mongodb.spark.config.{ReadConfig, WriteConfig}
 import com.mongodb.spark.rdd.MongoRDD
 import com.mongodb.spark.rdd.api.java.JavaMongoRDD
-import com.mongodb.spark.sql.MapFunctions.{documentToRow, rowToDocument}
+import com.mongodb.spark.sql.MapFunctions.{documentToRow, safeDocumentToRow, rowToDocument}
 import com.mongodb.spark.sql.{MongoInferSchema, helpers}
 
 /**
@@ -542,6 +542,32 @@ case class MongoSpark(sqlContext: SQLContext, connector: MongoConnector, readCon
    */
   def toDF(schema: StructType): DataFrame = {
     val rowRDD = toBsonDocumentRDD.map(doc => documentToRow(doc, schema, Array()))
+    sqlContext.createDataFrame(rowRDD, schema)
+  }
+
+  /**
+   * Creates a `DataFrame` based on the provided schema.
+   *
+   * @param schema the schema representing the DataFrame.
+   * @return a DataFrame.
+   */
+  def toDF(schema: StructType, invalidRowsHandler: Seq[Row] => Unit): DataFrame = {
+    var seqRow: Seq[Row] = Seq()
+    var invalidRows: Seq[Row] = Seq()
+
+    for (doc <- toBsonDocumentRDD.collect()) {
+      val (valid, row) = safeDocumentToRow(doc, schema, Array())
+      if (valid) {
+        seqRow = seqRow :+ row
+      } else {
+        invalidRows = invalidRows :+ row
+      }
+    }
+
+    invalidRowsHandler(invalidRows)
+
+    val rowRDD = sqlContext.sparkContext.parallelize(seqRow)
+
     sqlContext.createDataFrame(rowRDD, schema)
   }
 
