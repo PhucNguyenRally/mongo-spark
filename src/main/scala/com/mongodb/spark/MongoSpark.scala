@@ -549,14 +549,20 @@ case class MongoSpark(sqlContext: SQLContext, connector: MongoConnector, readCon
    * Creates a `DataFrame` based on the provided schema.
    *
    * @param schema the schema representing the DataFrame.
-   * @return a DataFrame.
+   * @param schemaValidator a customized schema validator function.
+   * @param invalidRowsHandler a callback function to handle list of invalid rows
+   * @return a DataFrame with validated rows
    */
-  def toDF(schema: StructType, invalidRowsHandler: Seq[Row] => Unit): DataFrame = {
+  def toDF(
+    schema:             StructType,
+    schemaValidator:    (BsonDocument, StructType, Array[String]) => (Boolean, Row),
+    invalidRowsHandler: Seq[Row] => Unit
+  ): DataFrame = {
     var seqRow: Seq[Row] = Seq()
     var invalidRows: Seq[Row] = Seq()
 
     for (doc <- toBsonDocumentRDD.collect()) {
-      val (valid, row) = safeDocumentToRow(doc, schema, Array())
+      val (valid, row) = schemaValidator(doc, schema, Array())
       if (valid) {
         seqRow = seqRow :+ row
       } else {

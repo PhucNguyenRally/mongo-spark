@@ -35,6 +35,7 @@ import com.mongodb.spark.config.WriteConfig
 import com.mongodb.spark.sql.types.BsonCompatibility
 import org.apache.spark.sql.types.DataTypes
 import com.mongodb.spark.sql.helpers.StructFields
+import com.mongodb.spark.sql.MapFunctions.{safeDocumentToRow}
 
 class MongoDataFrameSpec extends RequiresMongoDB {
   // scalastyle:off magic.number
@@ -462,7 +463,7 @@ class MongoDataFrameSpec extends RequiresMongoDB {
 
     val readConfigMap = ReadConfig(Map("uri" -> "mongodb://127.0.0.1/", "database" -> "test", "collection" -> "test3"), Some(ReadConfig(sc)))
 
-    val df = MongoSpark.builder().sqlContext(sqlContext).readConfig(readConfigMap).build().toDF(multiTypesSchema, invalidRowHandler)
+    val df = MongoSpark.builder().sqlContext(sqlContext).readConfig(readConfigMap).build().toDF(multiTypesSchema, safeDocumentToRow, invalidRowHandler)
 
     df.registerTempTable("test3")
 
