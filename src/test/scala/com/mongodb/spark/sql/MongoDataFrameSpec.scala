@@ -30,7 +30,8 @@ import org.apache.spark.SparkException
 import org.scalatest.prop.TableDrivenPropertyChecks
 import com.mongodb.spark.sql.helpers.StructFields
 import com.mongodb.MongoClient
-import com.mongodb.spark.sql.MapFunctions.{documentToRow}
+import com.mongodb.spark.sql.MapFunctions.documentToRow
+import org.apache.spark.rdd.RDD
 
 class MongoDataFrameSpec extends RequiresMongoDB with TableDrivenPropertyChecks {
   // scalastyle:off magic.number
@@ -53,6 +54,37 @@ class MongoDataFrameSpec extends RequiresMongoDB with TableDrivenPropertyChecks 
   lazy val readConfigs = Table("readConfig", ReadConfig(sparkSession),
     ReadConfig(sparkSession).withOption(ReadConfig.pipelineIncludeNullFiltersProperty, "false"),
     ReadConfig(sparkSession).withOption(ReadConfig.pipelineIncludeFiltersAndProjectionsProperty, "false"))
+
+  def splitRddOnSchemaValidationLocal(
+    bsonDocumentRDD: RDD[BsonDocument],
+    schema:          StructType,
+    schemaValidator: (BsonDocument, StructType, Array[String]) => Row
+  ): (RDD[Row], RDD[BsonDocument]) = {
+    var row: Row = Row()
+    val validRDD = bsonDocumentRDD.filter(bdoc => {
+      try {
+        row = schemaValidator(bdoc, schema, Array())
+        true
+      } catch {
+        case ex: Throwable => {
+          false
+        }
+      }
+    }).map(doc => row)
+
+    val invalidRDD = bsonDocumentRDD.filter(bdoc => {
+      try {
+        schemaValidator(bdoc, schema, Array())
+        false
+      } catch {
+        case ex: Throwable => {
+          true
+        }
+      }
+    })
+
+    (validRDD, invalidRDD)
+  }
 
   "DataFrameReader" should "should be easily created from the SQLContext and load from Mongo" in withSparkContext() { sc =>
     sc.parallelize(characters).saveToMongoDB()
@@ -304,6 +336,49 @@ class MongoDataFrameSpec extends RequiresMongoDB with TableDrivenPropertyChecks 
     val readConfigMap = ReadConfig(Map("uri" -> "mongodb://127.0.0.1/", "database" -> "test", "collection" -> "test3"), Some(ReadConfig(sc)))
 
     val (validRDD, invalidRDD) = MongoSpark.builder().sparkSession(sparkSession).readConfig(readConfigMap).build().splitRddOnSchemaValidation(multiTypesSchema, documentToRow)
+
+    validRDD.count() should equal(3)
+    invalidRDD.count() should equal(2)
+
+    invalidRDD.foreach(println)
+
+    val df = sparkSession.createDataFrame(validRDD, multiTypesSchema)
+
+    df.createOrReplaceTempView("test3")
+
+    val dfQuery = sparkSession.sql("select * from test3")
+    val testDir = "/tmp/test3"
+
+    import java.io.File
+    import scala.reflect.io.Directory
+
+    val directory = new Directory(new File(testDir))
+    directory.deleteRecursively()
+
+    dfQuery.show()
+    dfQuery.write.json(testDir)
+
+  }
+
+  it should "be able to split a RDD into two RDDs using local splitRddOnSchemaValidationLocal" in withSparkContext() { sc =>
+    val sparkSession = SparkSession.builder().getOrCreate()
+
+    val myClient = new MongoClient()
+    val myDb = myClient.getDatabase("test")
+
+    myDb.getCollection("test3").drop()
+
+    myDb.getCollection("test3").insertMany(multiTypesDocs.map(doc => Document.parse(doc)).toList.asJava)
+
+    val readConfigMap = ReadConfig(Map("uri" -> "mongodb://127.0.0.1/", "database" -> "test", "collection" -> "test3"), Some(ReadConfig(sc)))
+
+    val rdd = MongoSpark.builder()
+      .sparkSession(sparkSession)
+      .readConfig(readConfigMap)
+      .build()
+      .toRDD[BsonDocument]()
+
+    val (validRDD, invalidRDD) = splitRddOnSchemaValidationLocal(rdd, multiTypesSchema, documentToRow)
 
     validRDD.count() should equal(3)
     invalidRDD.count() should equal(2)
