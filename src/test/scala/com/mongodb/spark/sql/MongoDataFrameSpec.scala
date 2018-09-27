@@ -32,6 +32,7 @@ import com.mongodb.spark.sql.helpers.StructFields
 import com.mongodb.MongoClient
 import com.mongodb.spark.sql.MapFunctions.documentToRow
 import org.apache.spark.rdd.RDD
+import org.apache.commons.codec.binary.Base32
 
 class MongoDataFrameSpec extends RequiresMongoDB with TableDrivenPropertyChecks {
   // scalastyle:off magic.number
@@ -403,6 +404,113 @@ class MongoDataFrameSpec extends RequiresMongoDB with TableDrivenPropertyChecks 
 
   }
 
+  it should "retrieve binary data documents correctly " in withSparkContext() { sc =>
+    val sparkSession = SparkSession.builder().getOrCreate()
+
+    val myClient = new MongoClient()
+    val myDb = myClient.getDatabase("test")
+
+    myDb.getCollection("binTest").drop()
+
+    myDb.getCollection("binTest").insertMany(binaryTypeDocs.map(doc => Document.parse(doc)).toList.asJava)
+
+    val readConfigMap = ReadConfig(Map("uri" -> "mongodb://127.0.0.1/", "database" -> "test", "collection" -> "binTest"), Some(ReadConfig(sc)))
+
+    val df = MongoSpark.load(sparkSession, readConfigMap).toDF()
+
+    df.count() should equal(6)
+
+    df.printSchema()
+
+    df.createOrReplaceTempView("binTest")
+
+    val dfQuery = sparkSession.sql("select * from binTest")
+    val testDir = "/tmp/binTest"
+
+    import java.io.File
+    import scala.reflect.io.Directory
+
+    val directory = new Directory(new File(testDir))
+    directory.deleteRecursively()
+
+    dfQuery.show()
+    dfQuery.write.json(testDir)
+  }
+
+  it should "retrieve binary data document correctly " in withSparkContext() { sc =>
+    val sparkSession = SparkSession.builder().getOrCreate()
+
+    val myClient = new MongoClient()
+    val myDb = myClient.getDatabase("test")
+
+    val binDocument: BsonDocument = {
+      val document = new BsonDocument()
+      val base32 = new Base32()
+      document.put("binary", new BsonBinary(base32.encode("test".getBytes())))
+      document
+    }
+
+    myDb.getCollection("binTestOne").drop()
+
+    myDb.getCollection("binTestOne", classOf[BsonDocument]).insertOne(binDocument)
+
+    val readConfigMap = ReadConfig(Map("uri" -> "mongodb://127.0.0.1/", "database" -> "test", "collection" -> "binTestOne"), Some(ReadConfig(sc)))
+
+    val df = MongoSpark.load(sparkSession, readConfigMap).toDF()
+
+    df.count() should equal(1)
+
+    df.printSchema()
+
+    df.createOrReplaceTempView("binTestOne")
+
+    val dfQuery = sparkSession.sql("select * from binTestOne")
+    val testDir = "/tmp/binTestOne"
+
+    import java.io.File
+    import scala.reflect.io.Directory
+
+    val directory = new Directory(new File(testDir))
+    directory.deleteRecursively()
+
+    dfQuery.show()
+    dfQuery.write.json(testDir)
+
+  }
+
+  it should "retrieve mix of binary and string data documents correctly " in withSparkContext() { sc =>
+    val sparkSession = SparkSession.builder().getOrCreate()
+
+    val myClient = new MongoClient()
+    val myDb = myClient.getDatabase("test")
+
+    myDb.getCollection("stringBinTest").drop()
+
+    myDb.getCollection("stringBinTest").insertMany(stringBinMixedDocs.map(doc => Document.parse(doc)).toList.asJava)
+
+    val readConfigMap = ReadConfig(Map("uri" -> "mongodb://127.0.0.1/", "database" -> "test", "collection" -> "stringBinTest"), Some(ReadConfig(sc)))
+
+    val df = MongoSpark.load(sparkSession, readConfigMap).toDF()
+
+    df.count() should equal(6)
+
+    df.printSchema()
+
+    df.createOrReplaceTempView("stringBinTest")
+
+    val dfQuery = sparkSession.sql("select * from stringBinTest")
+    val testDir = "/tmp/stringBinTest"
+
+    import java.io.File
+    import scala.reflect.io.Directory
+
+    val directory = new Directory(new File(testDir))
+    directory.deleteRecursively()
+
+    dfQuery.show()
+    dfQuery.write.json(testDir)
+  }
+
   it should "be able to round trip schemas containing MapTypes" in withSparkContext() { sc =>
     val sparkSession = SparkSession.builder().getOrCreate()
     val characterMap = characters.map(doc => Row(doc.getString("name"), Map("book" -> "The Hobbit", "author" -> "J. R. R. Tolkien")))
@@ -565,6 +673,24 @@ class MongoDataFrameSpec extends RequiresMongoDB with TableDrivenPropertyChecks 
     document.put("dbPointer", new BsonDbPointer("db.coll", objectId))
     document
   }
+
+  private val stringBinMixedDocs = List(
+    "{\"binaryField\":\"{ $binary: 12345678, $type:00}\"}",
+    "{\"binaryField\":\"{ $binary: 678,$type:00}\"}",
+    "{\"binaryField\":\"{ $binary: 00000000, $type: 00}\"}",
+    "{\"binaryField\":\"{ $binary: aabbccdd, $type: 00}\"}",
+    "{\"binaryField\":\"{ $binary: ORSXG5A=, $type: 00\"}}",
+    "{\"binaryField\": { \"$binary\" : \"UkFMWUhMVEgAAAAAAAAAAGmVDoWp9sJcLz9xQzE59Y3Ktpe+UHKTCbs7bY1lgUzSbJpNojQhbkS0FBBJ8gsJtXB8cfU15XGJH8usKzCvneybk/LFZFg/2Pwf3vpeWO0cijU5bBV2mPA6sHFWHiB9eOmaaavjwI3bIC1oi9WRl0+QoKQQlVaCxPT3i0Ny34pWki7c8FdbdRHkRr6g3O7gEiXTISV8ct5KwNa1kwPDgnKGIzqf6l52EFe4xvQm7sFT20ksqCOB99sRYiO99p0SLAcdB1SaEeLXXBxbEU5eiaiAhh21N1aahl9mXaY6ibuPjgHbPgtTCD4jiUfHrWyVDUAxOxxslSi5EtGpg0dXiLzk4AkqDkZISooJEoozxglB8NbIZ/uZMO30gy3ZBfSVVAWZ8A==\", \"$type\" : \"00\" }}"
+  )
+
+  private val binaryTypeDocs = List(
+    "{\"binaryField\": { \"$binary\" : \"12345678\", \"$type\" : \"00\" }}",
+    "{\"binaryField\": { \"$binary\" : \"678\", \"$type\" : \"00\" }}",
+    "{\"binaryField\": { \"$binary\" : \"00000000\", \"$type\" : \"00\" }}",
+    "{\"binaryField\": { \"$binary\" : \"aabbccdd\", \"$type\" : \"00\" }}",
+    "{\"binaryField\": { \"$binary\" : \"ORSXG5A=\", \"$type\" : \"00\" }}",
+    "{\"binaryField\": { \"$binary\" : \"UkFMWUhMVEgAAAAAAAAAAGmVDoWp9sJcLz9xQzE59Y3Ktpe+UHKTCbs7bY1lgUzSbJpNojQhbkS0FBBJ8gsJtXB8cfU15XGJH8usKzCvneybk/LFZFg/2Pwf3vpeWO0cijU5bBV2mPA6sHFWHiB9eOmaaavjwI3bIC1oi9WRl0+QoKQQlVaCxPT3i0Ny34pWki7c8FdbdRHkRr6g3O7gEiXTISV8ct5KwNa1kwPDgnKGIzqf6l52EFe4xvQm7sFT20ksqCOB99sRYiO99p0SLAcdB1SaEeLXXBxbEU5eiaiAhh21N1aahl9mXaY6ibuPjgHbPgtTCD4jiUfHrWyVDUAxOxxslSi5EtGpg0dXiLzk4AkqDkZISooJEoozxglB8NbIZ/uZMO30gy3ZBfSVVAWZ8A==\", \"$type\" : \"00\" }}"
+  )
 
   private val multiTypesDocs = List(
     "{\"nullValue\" : null, " +
